@@ -9,6 +9,7 @@ DATA_DIR = ROOT / "data"
 DATASET_PATH = DATA_DIR / "smartphones_2026.csv"      # Kaggle: Smartprix smartphones (April 2026) ราคาอินเดีย (INR)
 PRICES_PATH = DATA_DIR / "prices.csv"                  # ราคาไทยที่ตรวจเอง (ทับราคาประมาณ)
 MANUAL_SPECS_PATH = DATA_DIR / "specs_manual.csv"      # สเปกที่เติมเอง (ทับค่าใน dataset)
+IMAGES_PATH = DATA_DIR / "images.csv"                  # ลิงก์รูปมือถือ (กรอกเอง)
 CATALOG_PATH = ROOT / "thailand_catalog.json"          # รายชื่อรุ่นที่ขายอย่างเป็นทางการในไทย
 
 DATASET_NAME = "Smartprix Smartphones (April 2026) — Kaggle"

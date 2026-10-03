@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from config import DATASET_PATH, MANUAL_SPECS_PATH, PRICES_PATH
+from config import DATASET_PATH, IMAGES_PATH, MANUAL_SPECS_PATH, PRICES_PATH
 from thailand_filter import catalog_models, family, match_thai, model_key, variant_label
 
 COLUMN_MAP = {
@@ -180,3 +180,16 @@ def coverage(df: pd.DataFrame) -> dict:
     return {"dataset_models": len(df), "catalog_models": len(catalog_models()), "thai_matched": len(thai),
             "thai_priced": int((thai["price_kind"] == "ราคาไทย").sum()) if "price_kind" in thai else 0,
             "missing": sorted(set(m for _, m in catalog_models()) - set(thai["model"]))}
+
+
+def apply_images(df: pd.DataFrame, path: Path = IMAGES_PATH) -> pd.DataFrame:
+    """เพิ่มคอลัมน์ image (ลิงก์รูป) จาก data/images.csv รุ่นที่ไม่มีรูปเป็นค่าว่าง"""
+    out = df.copy()
+    out["image"] = ""
+    if not path.exists():
+        return out
+    img = pd.read_csv(path, encoding="utf-8-sig", dtype=str).fillna("")
+    img = img[img["image_url"].str.startswith("http")]
+    lookup = {(family(b), model_key(m, b)): u for b, m, u in zip(img["brand"], img["model"], img["image_url"])}
+    out["image"] = [lookup.get((family(b), model_key(m, b)), "") for b, m in zip(out["brand"], out["model"])]
+    return out
