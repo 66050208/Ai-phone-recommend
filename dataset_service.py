@@ -29,6 +29,8 @@ BRAND_DISPLAY = {"apple": "Apple", "samsung": "Samsung", "xiaomi": "Xiaomi", "po
                  "oppo": "OPPO", "vivo": "vivo", "iqoo": "iQOO", "oneplus": "OnePlus", "realme": "realme",
                  "honor": "HONOR", "google": "Google", "motorola": "Motorola", "nothing": "Nothing", "cmf": "CMF",
                  "infinix": "Infinix", "tecno": "TECNO", "huawei": "HUAWEI", "nubia": "nubia", "hmd": "HMD"}
+SANE_RANGES = {"ram_gb": (1, 32), "storage_gb": (8, 2048), "battery_mah": (1000, 20000), "charging_w": (5, 300),
+               "display_in": (3, 10), "refresh_hz": (30, 240), "camera_mp": (2, 250), "front_mp": (1, 100)}
 NUMERIC = ["price_inr", "smartprix_score", "ram_gb", "storage_gb", "battery_mah", "charging_w", "display_in",
            "refresh_hz", "camera_mp", "front_mp", "rear_cams"]
 
@@ -91,6 +93,10 @@ def load_dataset(path: Path = DATASET_PATH) -> pd.DataFrame:
         if col in df:
             df[col] = df[col].astype(str).str.lower().isin({"true", "1", "yes"})
     df = df[df["price_inr"] > 0].copy()
+    # ค่าที่เป็นไปไม่ได้ทางกายภาพ (พิมพ์ผิดใน dataset) ให้ถือว่าไม่มีข้อมูล
+    for col, (lo, hi) in SANE_RANGES.items():
+        if col in df:
+            df.loc[~df[col].between(lo, hi), col] = np.nan
 
     df["family"] = df["brand_raw"].map(family)
     df["key"] = [model_key(n, b) for n, b in zip(df["name_raw"], df["brand_raw"])]

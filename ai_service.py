@@ -31,7 +31,8 @@ def _clean(v):
 
 def compact(row: pd.Series, pros: list[str], cons: list[str]) -> dict:
     keys = ["name", "price_thb", "price_kind", "chipset", "ram_gb", "storage_gb", "camera_mp", "front_mp",
-            "battery_mah", "charging_w", "display_in", "refresh_hz", "has_5g", "has_nfc", "os", "score"]
+            "battery_mah", "charging_w", "display_in", "refresh_hz", "has_5g", "has_nfc", "os", "score",
+            "fair_price_thb", "deal_label", "segment"]
     out = {k: _clean(row.get(k)) for k in keys}
     out["model"] = out.pop("name")
     out["ข้อดีจากการคำนวณ"] = pros
@@ -73,6 +74,7 @@ def build_prompt(request: dict, picks: list[dict]) -> str:
 - best_for: เหมาะกับใครในประโยคเดียว
 - summary: สรุปภาพรวม 1–2 ประโยค ว่าควรเลือกรุ่นไหนในกรณีใด
 - ถ้า price_kind เป็น "ประมาณจากราคาอินเดีย" ต้องบอกว่าเป็นราคาประมาณ ไม่ใช่ราคาไทย
+- fair_price_thb คือราคาที่ควรเป็นตามสเปกจากโมเดล Machine Learning, deal_label บอกว่าถูกหรือแพงกว่าสเปก, segment คือกลุ่มจาก K-Means ใช้ประกอบเหตุผลได้
 - caution: ข้อจำกัดของข้อมูล เช่น ราคาอาจเปลี่ยน ควรเช็กกับร้านก่อนซื้อ"""
 
 

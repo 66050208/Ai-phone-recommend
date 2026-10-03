@@ -163,7 +163,8 @@ def _num(v, nd=0):
 
 def _phone_dict(r: pd.Series) -> dict:
     keys = ["name", "price_thb", "price_kind", "chipset", "ram_gb", "storage_gb", "camera_mp", "front_mp",
-            "battery_mah", "charging_w", "display_in", "refresh_hz", "has_5g", "has_nfc", "os", "in_thailand"]
+            "battery_mah", "charging_w", "display_in", "refresh_hz", "has_5g", "has_nfc", "os", "in_thailand",
+            "fair_price_thb", "deal_label", "segment"]
     out = {k: _num(r.get(k)) for k in keys}
     if "score" in r and pd.notna(r.get("score")):
         out["คะแนนความเหมาะสม"] = _num(r["score"], 1)

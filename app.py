@@ -20,6 +20,7 @@ from assistant_service import ChatTools, chat, parse_request
 from dataset_service import apply_images, apply_manual_specs, apply_prices, coverage, load_dataset, load_prices
 from firebase_auth import guest_allowed, login_user, register_user, reset_password
 from insight_service import budget_upgrade, value_frontier, why_not
+from ml_service import PriceModel, Segments, apply_ml, segment_phones, train_price_model
 from scoring_service import (
     DIMENSIONS, USE_CASE_ICONS, USE_CASES, Request, filter_candidates, pros_cons, score, spec_text,
 )
@@ -46,6 +47,13 @@ def init_state() -> None:
 @st.cache_data(show_spinner="กำลังโหลดข้อมูลมือถือ...")
 def base_dataset() -> pd.DataFrame:
     return apply_images(apply_manual_specs(load_dataset()))
+
+
+@st.cache_resource(show_spinner="กำลังเทรนโมเดล Machine Learning (ครั้งแรกครั้งเดียว)...")
+def ml_models() -> tuple[PriceModel, Segments]:
+    """เทรนครั้งเดียวต่อเซิร์ฟเวอร์ แล้วใช้ซ้ำทุกผู้ใช้ (ข้อมูลเปลี่ยนเมื่อ deploy ใหม่เท่านั้น)"""
+    d = apply_prices(base_dataset(), load_prices(), DEFAULT_INR_TO_THB)
+    return train_price_model(d), segment_phones(d)
 
 
 @st.cache_data(show_spinner=False, ttl=86400)
@@ -169,6 +177,66 @@ def value_chart(ranked: pd.DataFrame, picks: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def ml_chips(r) -> str:
+    """ป้ายกลุ่ม (K-Means) และราคาเทียบสเปก (Random Forest) บนการ์ด"""
+    chips = []
+    if r.get("segment"):
+        chips.append(f'<span class="chip">กลุ่ม: {ui.esc(r["segment"])}</span>')
+    label, ratio = r.get("deal_label"), r.get("deal_ratio")
+    if label:
+        kind = "good" if ratio <= 0.85 else "bad" if ratio >= 1.15 else ""
+        chips.append(f'<span class="chip {kind}">{ui.esc(label)} (ควรอยู่ที่ราว {ui.baht(r["fair_price_thb"])})</span>')
+    return f'<div class="chips" style="margin-left:2.6rem">{"".join(chips)}</div>' if chips else ""
+
+
+def _base_layout(fig: go.Figure, height: int = 380) -> go.Figure:
+    fig.update_layout(height=height, margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor="rgba(0,0,0,0)",
+                      plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Anuphan, sans-serif", size=13, color=ui.INK),
+                      legend=dict(orientation="h", y=-0.22), hovermode="closest")
+    fig.update_xaxes(gridcolor=ui.LINE)
+    fig.update_yaxes(gridcolor=ui.LINE)
+    return fig
+
+
+def actual_vs_pred_chart(tp: pd.DataFrame, rate: float) -> go.Figure:
+    a, p = tp["actual"] * rate, tp["predicted"] * rate
+    lo, hi = float(min(a.min(), p.min())) * 0.9, float(max(a.max(), p.max())) * 1.1
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=[lo, hi], y=[lo, hi], mode="lines", name="ทายถูกพอดี",
+                             line=dict(color=ui.MUTED, dash="dot", width=1), hoverinfo="skip"))
+    fig.add_trace(go.Scatter(x=a, y=p, mode="markers", name="รุ่นในชุดทดสอบ", text=tp["name"],
+                             marker=dict(size=8, color=ui.INDIGO, opacity=0.7),
+                             hovertemplate="%{text}<br>จริง ฿%{x:,.0f}<br>ทาย ฿%{y:,.0f}<extra></extra>"))
+    _base_layout(fig)
+    fig.update_xaxes(title_text="ราคาจริง (บาท, สเกล log)", type="log", tickformat=",")
+    fig.update_yaxes(title_text="ราคาที่โมเดลทาย (บาท, สเกล log)", type="log", tickformat=",")
+    return fig
+
+
+def importance_chart(imp: pd.DataFrame) -> go.Figure:
+    d = imp[imp["percent"] >= 0.5].sort_values("percent")
+    fig = go.Figure(go.Bar(x=d["percent"], y=d["group"], orientation="h", marker_color=ui.INDIGO,
+                           hovertemplate="%{y}: %{x:.1f}%<extra></extra>"))
+    _base_layout(fig, height=max(260, 34 * len(d) + 60))
+    fig.update_xaxes(title_text="ความสำคัญต่อการทายราคา (%)")
+    return fig
+
+
+SEGMENT_COLORS = [ui.INDIGO, "#E07A00", "#0E7A4F", "#B4372F", "#7C3AED", "#0284C7", "#A16207"]
+
+
+def segment_chart(coords: pd.DataFrame) -> go.Figure:
+    fig = go.Figure()
+    for i, (seg, part) in enumerate(coords.groupby("segment", sort=False)):
+        fig.add_trace(go.Scatter(x=part["x"], y=part["y"], mode="markers", name=seg, text=part["name"],
+                                 marker=dict(size=7, color=SEGMENT_COLORS[i % len(SEGMENT_COLORS)], opacity=0.75),
+                                 hovertemplate="%{text}<extra>" + seg + "</extra>"))
+    _base_layout(fig, height=420)
+    fig.update_xaxes(title_text="องค์ประกอบหลักที่ 1 (PCA)", showticklabels=False, zeroline=False)
+    fig.update_yaxes(title_text="องค์ประกอบหลักที่ 2 (PCA)", showticklabels=False, zeroline=False)
+    return fig
+
+
 def radar(rows: pd.DataFrame, names: list[str]) -> go.Figure:
     dims = list(DIMENSIONS)
     labels = [DIMENSIONS[d][2] for d in dims]
@@ -255,12 +323,15 @@ with st.sidebar:
 
 try:
     phones = apply_prices(base_dataset(), current_prices(), DEFAULT_INR_TO_THB)
+    price_model, segments = ml_models()
+    phones = apply_ml(phones, price_model, segments, DEFAULT_INR_TO_THB)
 except (FileNotFoundError, ValueError) as err:
     st.error(f"อ่านไฟล์ข้อมูลมือถือไม่ได้: {err} ตรวจว่ามีไฟล์ data/smartphones_2026.csv")
     st.stop()
 cov = coverage(phones)
 
-tab_find, tab_compare, tab_browse, tab_about = st.tabs(["หามือถือ", "เทียบเอง", "ดูทุกรุ่น", "วิธีคิดคะแนน"])
+tab_find, tab_compare, tab_browse, tab_ml, tab_about = st.tabs(
+    ["หามือถือ", "เทียบเอง", "ดูทุกรุ่น", "โมเดล ML", "วิธีคิดคะแนน"])
 
 # ---------------------------------------------------------------------------
 # แท็บ: หามือถือ
@@ -346,7 +417,7 @@ with tab_find:
                 if not r["in_thailand"]:
                     sub += " (ไม่อยู่ในรายชื่อขายในไทย)"
                 with head:
-                    ui.html_block(ui.pick_header(i, r["name"], sub))
+                    ui.html_block(ui.pick_header(i, r["name"], sub) + ml_chips(r))
                 with price:
                     ui.html_block(ui.price_block(r["price_thb"], r["price_kind"], highlight=i == 1))
                 ui.html_block(ui.meter(r["score"]) + f'<p class="why">{ui.esc(item.get("why", ""))}</p>')
@@ -481,9 +552,75 @@ with tab_browse:
             specs = [x for x in (spec_text(r, "performance"), spec_text(r, "storage"), spec_text(r, "camera"),
                                  spec_text(r, "battery")) if x]
             note = "ราคาไทย" if r["price_kind"] == "ราคาไทย" else "ราคาประมาณ"
+            specs = ([r["segment"]] if r.get("segment") else []) + specs
             cards.append(ui.mini_card(r["name"], ui.baht(r["price_thb"]), note, specs, bool(r["in_thailand"]),
                                       ui.phone_image(r.get("image", ""), r["name"], r["brand"], small=True)))
         ui.html_block(ui.grid(cards))
+
+# ---------------------------------------------------------------------------
+# แท็บ: โมเดล ML
+# ---------------------------------------------------------------------------
+with tab_ml:
+    rate = DEFAULT_INR_TO_THB
+    pm, sg = price_model, segments
+    st.subheader("1) ทำนาย “ราคาที่ควรเป็น” จากสเปก")
+    st.markdown(f"Random Forest Regression เรียนรู้จากมือถือ {pm.n_train + pm.n_test} รุ่น ว่าสเปกแบบนี้ควรมีราคาเท่าไร "
+                f"แบ่งข้อมูลสอน {pm.n_train} รุ่น และเก็บไว้ทดสอบ {pm.n_test} รุ่นที่โมเดลไม่เคยเห็น")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("R² (ยิ่งใกล้ 1 ยิ่งดี)", f"{pm.metrics['R2']:.2f}", delta=f"baseline {pm.baseline['R2']:.2f}", delta_color="off")
+    m2.metric("คลาดเคลื่อนเฉลี่ย (MAE)", ui.baht(pm.metrics["MAE"] * rate),
+              delta=f"baseline {ui.baht(pm.baseline['MAE'] * rate)}", delta_color="off")
+    m3.metric("คลาดเคลื่อนเฉลี่ย (%)", f"{pm.metrics['MAPE']:.0f}%", delta=f"baseline {pm.baseline['MAPE']:.0f}%",
+              delta_color="off")
+    m4.metric("RMSE", ui.baht(pm.metrics["RMSE"] * rate), delta=f"baseline {ui.baht(pm.baseline['RMSE'] * rate)}",
+              delta_color="off")
+    st.caption("baseline คือการทายทุกรุ่นด้วยราคามัธยฐาน ใช้ดูว่าโมเดลเก่งกว่าการเดาแบบง่ายแค่ไหน "
+               "ตัวเลขเงินบาทแปลงจากราคาอินเดีย")
+    left, right = st.columns(2)
+    with left:
+        st.markdown("**ราคาจริง เทียบ ราคาที่ทาย (ชุดทดสอบ)**")
+        st.plotly_chart(actual_vs_pred_chart(pm.test_pred, rate), use_container_width=True, config={"displayModeBar": False})
+        st.caption("จุดยิ่งใกล้เส้นประ ยิ่งทายแม่น")
+    with right:
+        st.markdown("**อะไรทำให้มือถือแพง (Permutation Importance)**")
+        st.plotly_chart(importance_chart(pm.importance), use_container_width=True, config={"displayModeBar": False})
+        st.caption("วัดโดยสลับค่าทีละปัจจัยแบบสุ่ม แล้วดูว่าโมเดลทายแย่ลงเท่าไร ไม่ได้แปลว่าเป็นสาเหตุโดยตรง")
+
+    st.markdown("**นำไปใช้:** ทุกรุ่นได้ “ราคาที่ควรเป็น” จากโมเดลที่ไม่เคยเห็นรุ่นนั้น (5-fold cross-validation) "
+                "ถ้าราคาจริงต่ำกว่า 15% ขึ้นไปติดป้าย “ถูกกว่าสเปก” สูงกว่า 15% ติด “แพงกว่าสเปก” "
+                "และใช้เป็นคะแนนความคุ้มค่าในการจัดอันดับ")
+    pool = phones[phones["in_thailand"]] if st.session_state.thailand_only else phones
+    deals = pool.dropna(subset=["deal_ratio"]).sort_values("deal_ratio")
+    best, worst = deals.head(5), deals.tail(5).iloc[::-1]
+
+    def deal_rows(d: pd.DataFrame) -> list:
+        return [(r["name"], [ui.baht(r["price_thb"]), ui.baht(r["fair_price_thb"]), r["deal_label"]], None)
+                for _, r in d.iterrows()]
+
+    scope = "ที่ขายในไทย" if st.session_state.thailand_only else "ทั้งหมด"
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(f"**คุ้มที่สุด 5 รุ่น ({scope})**")
+        ui.html_block(ui.compare_table(["ราคา", "ควรเป็น", "สรุป"], deal_rows(best)))
+    with c2:
+        st.markdown(f"**แพงเกินสเปกที่สุด 5 รุ่น ({scope})**")
+        ui.html_block(ui.compare_table(["ราคา", "ควรเป็น", "สรุป"], deal_rows(worst)))
+
+    st.subheader("2) แบ่งกลุ่มมือถือด้วย K-Means")
+    st.markdown(f"จัดกลุ่มจาก ประสิทธิภาพ RAM ความจุ กล้อง แบต ชาร์จ จอ และราคา (ปรับมาตรฐานก่อน) "
+                f"ลองแบ่ง {min(sg.silhouette)}–{max(sg.silhouette)} กลุ่ม แล้วเลือก **{sg.k} กลุ่ม** ที่ได้ silhouette score สูงสุด "
+                f"({sg.silhouette[sg.k]:.2f}) ชื่อกลุ่มตั้งอัตโนมัติจากระดับราคาและจุดเด่นของกลุ่ม")
+    st.plotly_chart(segment_chart(sg.coords), use_container_width=True, config={"displayModeBar": False})
+    st.caption("ย่อข้อมูล 8 มิติให้เหลือ 2 มิติด้วย PCA เพื่อวาดกราฟ จุดสีเดียวกันคือกลุ่มเดียวกัน")
+    prof = sg.profile
+    rows = [("จำนวนรุ่น", [f"{c:,}" for c in prof["count"]], None),
+            ("ราคากลาง (บาท)", [ui.baht(v * rate) for v in prof["price_inr"]], None),
+            ("ประสิทธิภาพชิปเฉลี่ย", [f"{v:.0f}/100" for v in prof["perf_score"]], None),
+            ("RAM / ความจุ", [f"{a:.0f} / {b:.0f} GB" for a, b in zip(prof["ram_gb"], prof["storage_gb"])], None),
+            ("กล้องหลัก", [f"{v:.0f} MP" for v in prof["camera_mp"]], None),
+            ("แบต / ชาร์จ", [f"{a:,.0f} mAh / {b:.0f}W" for a, b in zip(prof["battery_mah"], prof["charging_w"])], None)]
+    ui.html_block(ui.compare_table(list(prof["segment"]), rows))
+    st.caption("ค่าในตารางเป็นค่ามัธยฐานของแต่ละกลุ่ม ป้ายกลุ่มแสดงบนการ์ดมือถือทุกใบ")
 
 # ---------------------------------------------------------------------------
 # แท็บ: วิธีคิดคะแนน
@@ -494,7 +631,7 @@ with tab_about:
 1. **กรอง** ตามงบ แบรนด์ ความจุ 5G/NFC และเลือกได้ว่าจะดูเฉพาะรุ่นที่ขายอย่างเป็นทางการในไทย
 2. **ให้คะแนนรายด้าน** ประสิทธิภาพ กล้องหลัก กล้องหน้า แบต ชาร์จเร็ว จอลื่น ความจุ RAM เป็น 0–100 โดยเทียบกับรุ่นอื่นในกลุ่ม
 3. **ถ่วงน้ำหนักตามการใช้งาน** เช่น เล่นเกมเน้นประสิทธิภาพและจอ ถ่ายรูปเน้นกล้องและความจุ ด้านที่คุณเลือกเน้นจะได้น้ำหนักเพิ่ม
-4. **คิดความคุ้มค่า** จากคะแนนสเปกต่อบาท รุ่นที่ข้อมูลไม่ครบจะถูกลดคะแนนตามสัดส่วน
+4. **คิดความคุ้มค่า** จากโมเดล Machine Learning ที่ทายราคาที่ควรเป็นจากสเปก (ดูแท็บ “โมเดล ML”) รุ่นที่ข้อมูลไม่ครบจะถูกลดคะแนนตามสัดส่วน
 5. **ข้อดี/ข้อควรรู้** มาจากคะแนนรายด้าน (70 ขึ้นไป = เด่น, 30 ลงมา = ด้อย) อ้างตัวเลขจริง
 6. **AI อธิบาย** เขียนเหตุผลจาก 5 รุ่นที่ระบบเลือกแล้วเท่านั้น ถ้า AI พูดถึงรุ่นอื่น ระบบจะตัดทิ้ง
 """)

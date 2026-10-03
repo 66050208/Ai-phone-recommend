@@ -223,6 +223,47 @@ def test_chat_tools_and_agent_loop():
     out = assistant_service.chat("อันดับ 1 คืออะไร", [], tools)
     assert out["answer"] == "อันดับ 1 คือ ..." and out["trace"][0]["tool"] == "get_ranking"
 
+
+# ---------------------------------------------------------------------------
+# Machine Learning
+# ---------------------------------------------------------------------------
+from ml_service import apply_ml, deal_label, segment_phones, train_price_model  # noqa: E402
+
+_ML = {}
+
+
+def ml():
+    if not _ML:
+        d = phones()
+        _ML.update(d=d, m=train_price_model(d), s=segment_phones(d))
+    return _ML["d"], _ML["m"], _ML["s"]
+
+
+def test_price_model_beats_baseline():
+    d, m, _ = ml()
+    assert m.n_train + m.n_test == len(d) and m.n_test > 100
+    assert m.metrics["R2"] > 0.7 and m.metrics["MAE"] < m.baseline["MAE"] * 0.6
+    assert abs(m.importance["percent"].sum() - 100) < 1e-6
+    assert m.fair_inr.notna().all() and len(m.fair_inr) == len(d)
+
+
+def test_deal_labels_and_scoring_use_ml():
+    d, m, s = ml()
+    out = apply_ml(d, m, s, 0.37)
+    assert deal_label(0.8).startswith("ถูกกว่าสเปก") and deal_label(1.3).startswith("แพงกว่าสเปก")
+    assert deal_label(1.0) == "ราคาสมเหตุสมผล"
+    req = Request(budget_max=20000, thailand_only=False)
+    ranked = score(filter_candidates(out, req), req)
+    ratio = ranked["fair_price_thb"] / ranked["price_thb"]
+    assert ranked.loc[ratio.idxmax(), "s_value"] == 100  # คุ้มที่สุดตาม ML ได้คะแนนความคุ้มค่าเต็ม
+
+
+def test_segments():
+    d, _, s = ml()
+    assert 4 <= s.k <= 7 and s.labels.nunique() == s.k and s.labels.notna().all()
+    assert s.profile["price_inr"].is_monotonic_increasing and s.profile["count"].min() >= 5
+    assert s.profile["count"].sum() == len(d) and len(s.coords) == len(d)
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):

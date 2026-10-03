@@ -116,7 +116,11 @@ def score(df: pd.DataFrame, req: Request) -> pd.DataFrame:
     weighted = np.where(present_w > 0, np.nansum(np.where(has, S, 0) * wv, axis=1) / np.maximum(present_w, 1e-9), np.nan)
     d["completeness"] = present_w / wv.sum() * 100
     d["spec_score"] = weighted * (0.7 + 0.3 * present_w / wv.sum())  # ข้อมูลไม่ครบ = ถูกลดคะแนน
-    d["s_value"] = _percentile(d["spec_score"] / d["price_thb"])
+    # ความคุ้มค่า: ถ้ามีราคายุติธรรมจากโมเดล ML ใช้ (ราคาที่ควรเป็น ÷ ราคาจริง) ไม่งั้นใช้คะแนนสเปกต่อบาท
+    if "fair_price_thb" in d and d["fair_price_thb"].notna().any():
+        d["s_value"] = _percentile(d["fair_price_thb"] / d["price_thb"])
+    else:
+        d["s_value"] = _percentile(d["spec_score"] / d["price_thb"])
     vw = w.get("value", 0)
     d["score"] = ((d["spec_score"] * wv.sum() + d["s_value"].fillna(d["spec_score"]) * vw) / (wv.sum() + vw)).round(1)
     return d.sort_values(["score", "price_thb"], ascending=[False, True]).reset_index(drop=True)
@@ -152,8 +156,13 @@ def pros_cons(row: pd.Series, req: Request) -> tuple[list[str], list[str]]:
             pros.append(f"{label}เด่นในกลุ่มนี้{detail}")
         elif s <= WEAK and w.get(dim, 0) >= 2:
             cons.append(f"{label}ด้อยกว่ารุ่นอื่นในกลุ่ม{detail}")
-    v = row.get("s_value")
-    if v is not None and not pd.isna(v):
+    ratio, v = row.get("deal_ratio"), row.get("s_value")
+    if ratio is not None and not pd.isna(ratio):  # จากโมเดล ML ราคาที่ควรเป็น
+        if ratio <= 0.85:
+            pros.append(f"ราคาต่ำกว่าที่ควรเป็นตามสเปก ~{(1 - ratio) * 100:.0f}% (โมเดล ML)")
+        elif ratio >= 1.15:
+            cons.append(f"ราคาสูงกว่าที่ควรเป็นตามสเปก ~{(ratio - 1) * 100:.0f}% (โมเดล ML)")
+    elif v is not None and not pd.isna(v):
         if v >= GOOD:
             pros.append("คุ้มค่าต่อราคาเมื่อเทียบกับรุ่นอื่น")
         elif v <= WEAK:
