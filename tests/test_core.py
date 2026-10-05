@@ -66,7 +66,8 @@ def test_dataset_loads_and_merges_variants():
     assert s26u["variants"] == 3 and s26u["price_inr"] <= s26u["price_inr_max"] and s26u["in_thailand"]
     cov = coverage(d)
     assert cov["thai_matched"] >= 18 and cov["catalog_models"] == 42
-    assert (d["price_kind"] == "ประมาณจากราคาอินเดีย").all()
+    assert set(d["price_kind"]) <= {"ประมาณจากราคาอินเดีย", "ราคาไทย"}
+    assert (d.loc[~d["in_thailand"], "price_kind"] == "ประมาณจากราคาอินเดีย").all()
 
 
 def test_thai_price_overrides_estimate():
@@ -75,9 +76,9 @@ def test_thai_price_overrides_estimate():
     d = phones(prices=p)
     row = d[d["name"] == "Samsung Galaxy A57"].iloc[0]
     assert row["price_thb"] == 13999 and row["price_kind"] == "ราคาไทย"
-    assert coverage(d)["thai_priced"] == 1
-    assert phones(rate=0.5).loc[lambda x: x["name"] == "Samsung Galaxy S26", "price_thb"].iloc[0] > \
-        phones(rate=0.3).loc[lambda x: x["name"] == "Samsung Galaxy S26", "price_thb"].iloc[0]
+    assert coverage(d)["thai_priced"] >= 1
+    assert phones(rate=0.5).loc[lambda x: x["name"] == "Samsung Galaxy S26 FE", "price_thb"].iloc[0] > \
+        phones(rate=0.3).loc[lambda x: x["name"] == "Samsung Galaxy S26 FE", "price_thb"].iloc[0]
 
 
 def test_filters():

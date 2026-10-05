@@ -15,6 +15,20 @@ import pandas as pd
 from config import DEFAULT_GEMINI_MODEL, secret
 
 
+def ai_error_text(err) -> str:
+    """แปลง error ของ Gemini เป็นข้อความภาษาไทยที่อ่านเข้าใจ"""
+    t = str(err)
+    if any(c in t for c in ("503", "UNAVAILABLE", "high demand")):
+        return "ตอนนี้ Gemini มีผู้ใช้หนาแน่นชั่วคราว รอสักครู่แล้วลองใหม่"
+    if any(c in t for c in ("429", "RESOURCE_EXHAUSTED")):
+        return "ใช้ Gemini เกินโควตาชั่วคราว รอสักครู่แล้วลองใหม่"
+    if any(c in t for c in ("401", "403", "UNAUTHENTICATED", "PERMISSION_DENIED", "API key not valid", "API_KEY_INVALID")):
+        return "GEMINI_API_KEY ไม่ถูกต้อง สร้าง key ใหม่ที่ aistudio.google.com/apikey แล้วใส่ใน Secrets"
+    if any(c in t for c in ("404", "NOT_FOUND")):
+        return "ไม่พบโมเดล Gemini ที่ตั้งไว้ ตรวจค่า GEMINI_MODEL"
+    return f"เรียก Gemini ไม่สำเร็จ ({t[:160]})"
+
+
 def has_gemini_key() -> bool:
     return bool(secret("GEMINI_API_KEY"))
 
@@ -126,7 +140,7 @@ def explain(request: dict, picks: list[dict]) -> dict:
 
     client = genai.Client(api_key=secret("GEMINI_API_KEY"))
     last = None
-    for delay in (0, 2, 5):
+    for delay in (0, 3, 8):
         if delay:
             time.sleep(delay)
         try:
@@ -142,5 +156,5 @@ def explain(request: dict, picks: list[dict]) -> dict:
             if not any(c in str(err) for c in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED")):
                 break
     out = fallback(picks)
-    out["error"] = f"เรียก Gemini ไม่สำเร็จ ใช้คำอธิบายจากกฎแทน ({str(last)[:200]})"
+    out["error"] = ai_error_text(last) + " จึงใช้คำอธิบายจากสูตรแทน"
     return out

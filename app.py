@@ -14,7 +14,7 @@ except ImportError:
     pass
 
 import ui
-from ai_service import compact, explain, has_gemini_key
+from ai_service import ai_error_text, compact, explain, has_gemini_key
 from config import DEFAULT_INR_TO_THB, TOP_N
 from assistant_service import ChatTools, chat, parse_request
 from dataset_service import apply_images, apply_manual_specs, apply_prices, coverage, load_dataset, load_prices
@@ -26,11 +26,19 @@ from scoring_service import (
 )
 from youtube_service import review_videos, search_link
 
-st.set_page_config(page_title="Mobile AI Recommender", page_icon="📱", layout="wide")
+st.set_page_config(page_title="Mobile AI Recommender", page_icon="📱", layout="wide", initial_sidebar_state="expanded")
 ui.apply_theme()
 
 PRIORITIES = ["ประสิทธิภาพ", "กล้อง", "กล้องหน้า", "แบตเตอรี่", "ชาร์จเร็ว", "จอลื่น", "ความจุ", "ความคุ้มค่า"]
-RADAR_COLORS = [ui.INDIGO, "#E07A00", "#0E7A4F"]
+RADAR_COLORS = [ui.NAVY, "#E07A00", "#0E7A4F"]   # สีเข้มตัดกันชัดบนพื้นกระจก
+
+# เมนูด้านข้าง: (id, ชื่อ, ไอคอน Material)
+NAV = [("find", "หามือถือ", ":material/search:"), ("compare", "เทียบเอง", ":material/compare_arrows:"),
+       ("browse", "ดูทุกรุ่น", ":material/grid_view:"), ("ml", "โมเดล ML", ":material/model_training:"),
+       ("about", "วิธีคิดคะแนน", ":material/calculate:")]
+# ค่าตัวกรองที่ต้องจำไว้แม้เปลี่ยนไปหน้าอื่น (Streamlit จะลบค่าของ widget ที่ไม่ได้แสดงในรอบนั้น)
+KEEP_KEYS = ["budget", "use_case", "priorities", "brands", "min_storage", "need_5g", "need_nfc", "thailand_only",
+             "note", "nl_text", "compare_pick", "why_pick"]
 
 
 # ---------------------------------------------------------------------------
@@ -39,9 +47,27 @@ RADAR_COLORS = [ui.INDIGO, "#E07A00", "#0E7A4F"]
 def init_state() -> None:
     defaults = {"user": None, "result": None, "prices": None, "thailand_only": True, "chat": [], "parse_note": "",
                 # ค่าเริ่มต้นของตัวกรอง (ตั้งใน session ครั้งเดียว ไม่ส่ง default ให้ widget ซ้ำ จะได้ไม่มีคำเตือน)
-                "budget": (0, 15000), "use_case": "ใช้งานทั่วไป/เรียน", "priorities": []}
+                "budget": (0, 15000), "use_case": "ใช้งานทั่วไป/เรียน", "priorities": [],
+                "page": "find", "nav_collapsed": False}
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
+    for key in KEEP_KEYS:  # เขียนค่าเดิมกลับ เพื่อไม่ให้หายตอนอยู่หน้าอื่น
+        if key in st.session_state:
+            st.session_state[key] = st.session_state[key]
+
+
+def go_page(page: str) -> None:
+    st.session_state.page = page
+
+
+def toggle_nav() -> None:
+    st.session_state.nav_collapsed = not st.session_state.nav_collapsed
+
+
+def logout() -> None:
+    st.session_state.user = None
+    st.session_state.result = None
+    st.session_state.page = "find"
 
 
 @st.cache_data(show_spinner="กำลังโหลดข้อมูลมือถือ...")
@@ -160,20 +186,20 @@ def value_chart(ranked: pd.DataFrame, picks: pd.DataFrame) -> go.Figure:
     rest = ranked[~ranked["name"].isin(top)]
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=rest["price_thb"], y=rest["score"], mode="markers", name="รุ่นอื่นในงบ",
-                             marker=dict(size=8, color="#B7BECC"), text=rest["name"],
+                             marker=dict(size=8, color="#A3ADC2", line=dict(color="#fff", width=1)), text=rest["name"],
                              hovertemplate="%{text}<br>฿%{x:,.0f} | %{y:.0f} คะแนน<extra></extra>"))
     fig.add_trace(go.Scatter(x=frontier["price_thb"], y=frontier["score"], mode="lines", name="เส้นความคุ้มค่า",
-                             line=dict(color=ui.INDIGO, width=1.5, dash="dot"), hoverinfo="skip"))
+                             line=dict(color=ui.INDIGO, width=2, dash="dot"), hoverinfo="skip"))
     fig.add_trace(go.Scatter(x=picks["price_thb"], y=picks["score"], mode="markers+text", name="5 อันดับที่แนะนำ",
-                             marker=dict(size=14, color=ui.INDIGO, line=dict(color="#fff", width=2)),
+                             marker=dict(size=16, color=ui.NAVY, line=dict(color="#fff", width=2)),
                              text=[str(i) for i in range(1, len(picks) + 1)], textposition="middle center",
                              textfont=dict(color="#fff", size=11), customdata=picks["name"],
                              hovertemplate="%{customdata}<br>฿%{x:,.0f} | %{y:.0f} คะแนน<extra></extra>"))
     fig.update_layout(height=380, margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor="rgba(0,0,0,0)",
-                      plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Anuphan, sans-serif", size=13, color=ui.INK),
+                      plot_bgcolor="rgba(255,255,255,0.55)", font=dict(family="Anuphan, sans-serif", size=13, color=ui.INK),
                       legend=dict(orientation="h", y=-0.2), hovermode="closest")
-    fig.update_xaxes(title_text="ราคา (บาท)", gridcolor=ui.LINE, tickformat=",")
-    fig.update_yaxes(title_text="ความเหมาะสม (คะแนน)", gridcolor=ui.LINE, range=[0, 105])
+    fig.update_xaxes(title_text="ราคา (บาท)", gridcolor="#CBD3E4", tickformat=",")
+    fig.update_yaxes(title_text="ความเหมาะสม (คะแนน)", gridcolor="#CBD3E4", range=[0, 105])
     return fig
 
 
@@ -191,10 +217,10 @@ def ml_chips(r) -> str:
 
 def _base_layout(fig: go.Figure, height: int = 380) -> go.Figure:
     fig.update_layout(height=height, margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor="rgba(0,0,0,0)",
-                      plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Anuphan, sans-serif", size=13, color=ui.INK),
+                      plot_bgcolor="rgba(255,255,255,0.55)", font=dict(family="Anuphan, sans-serif", size=13, color=ui.INK),
                       legend=dict(orientation="h", y=-0.22), hovermode="closest")
-    fig.update_xaxes(gridcolor=ui.LINE)
-    fig.update_yaxes(gridcolor=ui.LINE)
+    fig.update_xaxes(gridcolor="#CBD3E4")
+    fig.update_yaxes(gridcolor="#CBD3E4")
     return fig
 
 
@@ -245,8 +271,8 @@ def radar(rows: pd.DataFrame, names: list[str]) -> go.Figure:
         values = [0 if pd.isna(r.get(f"s_{d}")) else r[f"s_{d}"] for d in dims]
         fig.add_trace(go.Scatterpolar(r=values + values[:1], theta=labels + labels[:1], name=names[i], fill="toself",
                                       opacity=0.55, line=dict(color=RADAR_COLORS[i % 3], width=2)))
-    fig.update_layout(polar=dict(radialaxis=dict(range=[0, 100], showticklabels=False, gridcolor=ui.LINE),
-                                 angularaxis=dict(gridcolor=ui.LINE)),
+    fig.update_layout(polar=dict(radialaxis=dict(range=[0, 100], showticklabels=False, gridcolor="#CBD3E4"),
+                                 angularaxis=dict(gridcolor="#CBD3E4")),
                       height=420, margin=dict(l=40, r=40, t=20, b=20), paper_bgcolor="rgba(0,0,0,0)",
                       font=dict(family="Anuphan, sans-serif", size=14, color=ui.INK),
                       legend=dict(orientation="h", y=-0.08))
@@ -259,13 +285,17 @@ init_state()
 # ล็อกอิน
 # ---------------------------------------------------------------------------
 if st.session_state.user is None:
-    left, right = st.columns([5, 4], gap="large")
-    with left:
-        ui.hero("เลือกมือถือที่ใช่ ในงบที่มี",
-                "บอกงบกับสิ่งที่ใช้บ่อย แล้วดู 5 รุ่นที่เหมาะที่สุด พร้อมข้อดีข้อเสียจากสเปกจริงและคลิปรีวิว")
-        ui.html_block(ui.chips(["📚 เรียน", "🎮 เล่นเกม", "📸 ถ่ายรูป", "🔋 แบตอึด", "💼 ทำงาน"]))
-    with right:
-        with st.container(border=True):
+    st.markdown("<div style='height:2.2vh'></div>", unsafe_allow_html=True)
+    _, mid, _ = st.columns([0.5, 6, 0.5])
+    with mid, st.container(border=True, key="login_card"):
+        left, right = st.columns([1, 1], gap="large", vertical_alignment="center")
+        with right:
+            ui.html_block(ui.login_art())
+        with left:
+            ui.html_block('<div class="login-brand"><div class="logo">📱</div><div><div class="name">Mobile AI Recommender</div>'
+                          '<div class="tag">เลือกมือถือที่ใช่ ในงบที่มี</div></div></div>'
+                          '<p class="login-title">ยินดีต้อนรับ</p>'
+                          '<p class="login-sub">เข้าสู่ระบบเพื่อดู 5 รุ่นที่เหมาะกับงบและการใช้งานของคุณ</p>')
             tab_login, tab_register, tab_reset = st.tabs(["เข้าสู่ระบบ", "สมัครสมาชิก", "ลืมรหัสผ่าน"])
             with tab_login:
                 with st.form("login_form"):
@@ -312,14 +342,19 @@ if st.session_state.user is None:
     st.stop()
 
 # ---------------------------------------------------------------------------
-# ข้อมูล + แถบข้าง
+# แถบเมนูด้านข้าง: กางออก = ไอคอน + ชื่อ, หุบ = ไอคอนอย่างเดียว
 # ---------------------------------------------------------------------------
+page, collapsed = st.session_state.page, st.session_state.nav_collapsed
+ui.html_block(ui.sidebar_state_css(collapsed, page))
 with st.sidebar:
-    st.markdown(f"**{ui.esc(st.session_state.user.get('email', '-'))}**")
-    if st.button("ออกจากระบบ", key="logout"):
-        st.session_state.user = None
-        st.session_state.result = None
-        st.rerun()
+    st.button("ย่อ/ขยายเมนู", icon=":material/keyboard_double_arrow_right:" if collapsed else ":material/keyboard_double_arrow_left:",
+              key="sb_toggle", on_click=toggle_nav, help="กางเมนู" if collapsed else "หุบเมนู")
+    ui.html_block(ui.profile_block(st.session_state.user.get("email", "-")))
+    for pid, label, icon in NAV:
+        st.button(label, icon=icon, key=f"nav_{pid}", on_click=go_page, args=(pid,), use_container_width=True,
+                  help=label if collapsed else None)
+    st.button("ออกจากระบบ", icon=":material/door_open:", key="logout", on_click=logout, use_container_width=True,
+              help="ออกจากระบบ" if collapsed else None)
 
 try:
     phones = apply_prices(base_dataset(), current_prices(), DEFAULT_INR_TO_THB)
@@ -330,13 +365,11 @@ except (FileNotFoundError, ValueError) as err:
     st.stop()
 cov = coverage(phones)
 
-tab_find, tab_compare, tab_browse, tab_ml, tab_about = st.tabs(
-    ["หามือถือ", "เทียบเอง", "ดูทุกรุ่น", "โมเดล ML", "วิธีคิดคะแนน"])
 
 # ---------------------------------------------------------------------------
 # แท็บ: หามือถือ
 # ---------------------------------------------------------------------------
-with tab_find:
+if page == "find":
     ui.hero("เลือกมือถือที่ใช่ ในงบที่มี", "พิมพ์บอกสิ่งที่อยากได้ หรือตั้งค่าเองด้านล่าง ระบบจะเทียบสเปกจริงแล้วเลือก 5 รุ่นที่คุ้มที่สุดให้")
     st.session_state.brand_options = sorted(phones["brand"].unique())
     with st.container(border=True):
@@ -496,7 +529,7 @@ with tab_find:
                         out = chat(question, st.session_state.chat, ChatTools(phones, req))
                         answer = out["answer"]
                     except Exception as err:
-                        answer = f"ถาม AI ไม่สำเร็จ ลองใหม่อีกครั้ง ({str(err)[:120]})"
+                        answer = ai_error_text(err)
                 st.session_state.chat += [{"role": "user", "content": question}, {"role": "assistant", "content": answer}]
                 st.rerun()
 
@@ -506,7 +539,7 @@ with tab_find:
 # ---------------------------------------------------------------------------
 # แท็บ: เทียบเอง
 # ---------------------------------------------------------------------------
-with tab_compare:
+if page == "compare":
     st.subheader("เลือก 2–3 รุ่นมาเทียบกัน")
     pool = phones[phones["in_thailand"]] if st.session_state.thailand_only else phones
     chosen = st.multiselect("รุ่นที่อยากเทียบ", sorted(pool["name"]), max_selections=3, key="compare_pick",
@@ -523,7 +556,7 @@ with tab_compare:
 # ---------------------------------------------------------------------------
 # แท็บ: ดูทุกรุ่น
 # ---------------------------------------------------------------------------
-with tab_browse:
+if page == "browse":
     st.subheader("ดูทุกรุ่น")
     f1, f2, f3 = st.columns([2, 1.4, 1.2])
     with f1:
@@ -560,7 +593,7 @@ with tab_browse:
 # ---------------------------------------------------------------------------
 # แท็บ: โมเดล ML
 # ---------------------------------------------------------------------------
-with tab_ml:
+if page == "ml":
     rate = DEFAULT_INR_TO_THB
     pm, sg = price_model, segments
     st.subheader("1) ทำนาย “ราคาที่ควรเป็น” จากสเปก")
@@ -625,7 +658,7 @@ with tab_ml:
 # ---------------------------------------------------------------------------
 # แท็บ: วิธีคิดคะแนน
 # ---------------------------------------------------------------------------
-with tab_about:
+if page == "about":
     st.subheader("ระบบเลือกให้อย่างไร")
     st.markdown("""
 1. **กรอง** ตามงบ แบรนด์ ความจุ 5G/NFC และเลือกได้ว่าจะดูเฉพาะรุ่นที่ขายอย่างเป็นทางการในไทย

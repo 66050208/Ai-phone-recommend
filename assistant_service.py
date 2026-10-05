@@ -141,7 +141,7 @@ def _generate(**kwargs):
     from google import genai
     client = genai.Client(api_key=secret("GEMINI_API_KEY"))
     last = None
-    for delay in (0, 2, 5):
+    for delay in (0, 3, 8):
         if delay:
             time.sleep(delay)
         try:
